@@ -1,6 +1,8 @@
 package main
 
 import (
+	"cmp"
+	"slices"
 	"time"
 
 	"github.com/DIMO-Network/model-garage/pkg/vss"
@@ -26,12 +28,12 @@ type Store struct {
 	ActiveLat      Cell
 	ActiveLon      Cell
 	ActiveHDOP     Cell
+	// SignalsToDelete flags each index in the original Signals array
+	// as being marked for deletion or not.
 	//
-	//
-	// Previously, we've set the Name fields of signals to magic
-	// strings in order to flag for deletion. This worked but may
-	// cause problems when there is more than one duplicate of a
-	// signal.
+	// Previously, we've used a magic string in the Name fields of
+	// signals for this purpose. This worked but may cause problems
+	// when there is more than one duplicate of a signal.
 	SignalsToDelete []bool
 	// InFlightTimestamp is the earliest timestamp among the latitude,
 	// longitude, and HDOP; if, indeed, any are populated.
@@ -176,6 +178,13 @@ func (s *Store) ProcessAll() []vss.Signal {
 	if len(s.Signals) == 0 {
 		return s.Signals
 	}
+
+	// Sort by timetamp in order to look for large time gaps between
+	// location components. Sorting also by name allows us to look
+	// for duplicates of any signal.
+	slices.SortFunc(s.Signals, func(a, b vss.Signal) int {
+		return cmp.Or(a.Timestamp.Compare(b.Timestamp), cmp.Compare(a.Name, b.Name))
+	})
 
 	s.TemplateSignal = &s.Signals[0]
 	s.SignalsToDelete = make([]bool, len(s.Signals))
