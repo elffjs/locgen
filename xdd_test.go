@@ -133,3 +133,18 @@ func TestDropUnpairedCoordinates(t *testing.T) {
 
 	assert.ElementsMatch(t, expected, actual)
 }
+
+func TestDropOriginCoordinates(t *testing.T) {
+	firstTs := time.Date(2025, time.April, 19, 9, 0, 0, 0, time.UTC)
+	signals := []vss.Signal{
+		{TokenID: 3, Timestamp: firstTs, Name: fieldLongitude, ValueNumber: 0},
+		{TokenID: 3, Timestamp: firstTs.Add(2 * time.Second), Name: fieldLatitude, ValueNumber: 0},
+	}
+
+	store := New(signals)
+	actual := store.ProcessAll()
+
+	expected := []vss.Signal{}
+
+	assert.ElementsMatch(t, expected, actual)
+}

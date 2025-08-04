@@ -98,6 +98,8 @@ func (s *Store) TryFlush() {
 		lon := s.GetValue(s.ActiveLon)
 
 		if lat == 0 && lon == 0 {
+			// Sometimes we do get (0, 0). These we just ignore; they
+			// are probably error values.
 			s.DropLatLon()
 		} else {
 			flushable = true
@@ -105,6 +107,7 @@ func (s *Store) TryFlush() {
 			loc.Longitude = lon
 		}
 	} else {
+		// If we have either of these, they are unpaired.
 		s.DropLatLon()
 	}
 
