@@ -7,10 +7,6 @@ import (
 )
 
 const (
-	// pruneSignalName is a signal name value for rows that we want to
-	// remove from the list.
-	pruneSignalName = "___prune"
-
 	// maxLocationTimestampGap is the maximum size of the time gap
 	// between location signals (latitude, longitude, HDOP) such that
 	// we still consider the signals to be related.
@@ -20,7 +16,7 @@ const (
 	fieldLongitude = vss.FieldCurrentLocationLongitude
 	fieldHDOP      = vss.FieldDIMOAftermarketHDOP
 
-	fieldLocation = "currentLocation"
+	fieldLocation = "currentLocation" // TODO(elffjs): Move this to the vss package.
 )
 
 type Store struct {
@@ -128,6 +124,8 @@ func (s *Store) HasAnyActive() bool {
 	return !s.InFlightTimestamp.IsZero()
 }
 
+// EnsureTimestamp sets the timestamp for the vss.Location currently
+// being built, if this timestamp has not already been set.
 func (s *Store) EnsureTimestamp(t time.Time) {
 	if s.InFlightTimestamp.IsZero() {
 		s.InFlightTimestamp = t
@@ -153,8 +151,8 @@ func (s *Store) Process(i int) {
 			// We got another value for this signal too quickly.
 			s.DropValue(i)
 		} else {
-			// We could attempt to Flush if we all three signals happen
-			// to be active, but we don't.
+			// We could attempt to Flush if all three signals happen
+			// to be active, but that would be more code, s we don't.
 			cell.Set(i)
 		}
 		s.EnsureTimestamp(sig.Timestamp)
