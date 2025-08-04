@@ -25,9 +25,9 @@ type Store struct {
 	Signals        []vss.Signal
 	AddedSignals   []vss.Signal
 	TemplateSignal *vss.Signal
-	ActiveLat      Cell
-	ActiveLon      Cell
-	ActiveHDOP     Cell
+	ActiveLat      IndexRef
+	ActiveLon      IndexRef
+	ActiveHDOP     IndexRef
 	// SignalsToDelete flags each index in the original Signals array
 	// as being marked for deletion or not.
 	//
@@ -42,34 +42,34 @@ type Store struct {
 
 var zeroTime time.Time
 
-type Cell struct {
+type IndexRef struct {
 	filled bool
 	index  int
 }
 
-func (c *Cell) Filled() bool {
-	return c.filled
+func (r *IndexRef) Filled() bool {
+	return r.filled
 }
 
 // Get returns the index stored for this cell, if any. If the cell is
 // empty then the sentinel value -1 is returned.
-func (c *Cell) Get() int {
-	if c.filled {
-		return c.index
+func (r *IndexRef) Get() int {
+	if r.filled {
+		return r.index
 	}
 	return -1
 }
 
-func (c *Cell) Set(index int) {
-	c.filled = true
-	c.index = index
+func (r *IndexRef) Set(index int) {
+	r.filled = true
+	r.index = index
 }
 
-func (c *Cell) Clear() {
-	c.filled = false
+func (r *IndexRef) Clear() {
+	r.filled = false
 }
 
-func (s *Store) GetValue(c Cell) float64 {
+func (s *Store) GetValue(c IndexRef) float64 {
 	return s.Signals[c.Get()].ValueNumber
 }
 
@@ -149,7 +149,8 @@ func (s *Store) EnsureTimestamp(t time.Time) {
 }
 
 func (s *Store) IsDuplicate(i int) bool {
-	// We only compare with preceding rows.
+	// We only compare with preceding rows, so at index 0 there's
+	// nothing to do.
 	if i == 0 {
 		return false
 	}
@@ -188,7 +189,7 @@ func (s *Store) Process(i int) {
 	}
 }
 
-func (s *Store) GetActiveIndex(signalName string) *Cell {
+func (s *Store) GetActiveIndex(signalName string) *IndexRef {
 	switch signalName {
 	case fieldLatitude:
 		return &s.ActiveLat
