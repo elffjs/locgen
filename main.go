@@ -79,6 +79,11 @@ func (s *Store) DropValue(signalIndex int) {
 	}
 }
 
+func (s *Store) DropLatLon() {
+	s.DropValue(s.ActiveLat.Get())
+	s.DropValue(s.ActiveLon.Get())
+}
+
 // TryFlush attempts to create a new location row with any active
 // signals. If this is not possible then any active signals will be
 // marked for deletion.
@@ -89,12 +94,18 @@ func (s *Store) TryFlush() {
 	)
 
 	if s.ActiveLat.Filled() && s.ActiveLon.Filled() {
-		flushable = true
-		loc.Latitude = s.GetValue(s.ActiveLat)
-		loc.Longitude = s.GetValue(s.ActiveLon)
+		lat := s.GetValue(s.ActiveLat)
+		lon := s.GetValue(s.ActiveLon)
+
+		if lat == 0 && lon == 0 {
+			s.DropLatLon()
+		} else {
+			flushable = true
+			loc.Latitude = lat
+			loc.Longitude = lon
+		}
 	} else {
-		s.DropValue(s.ActiveLat.Get())
-		s.DropValue(s.ActiveLon.Get())
+		s.DropLatLon()
 	}
 
 	if s.ActiveHDOP.Filled() {
@@ -134,13 +145,25 @@ func (s *Store) EnsureTimestamp(t time.Time) {
 	}
 }
 
+func (s *Store) IsDuplicate(i int) bool {
+	// We only compare with preceding rows.
+	if i == 0 {
+		return false
+	}
+
+	prevSig, sig := s.Signals[i-1], s.Signals[i]
+
+	return sig.Timestamp.Equal(prevSig.Timestamp) && sig.Name == prevSig.Name
+}
+
 func (s *Store) Process(i int) {
 	sig := &s.Signals[i]
 
 	// Remove exact duplicates, from the perspective of the dimo.signal
 	// table index.
-	if i > 0 && sig.Timestamp.Equal(s.Signals[i-1].Timestamp) && sig.Name == s.Signals[i-1].Name {
+	if s.IsDuplicate(i) {
 		s.DropValue(i)
+		return
 	}
 
 	if s.HasAnyActive() && sig.Timestamp.After(s.InFlightTimestamp.Add(maxLocationTimestampGap)) {
@@ -177,8 +200,8 @@ func (s *Store) ProcessAll() []vss.Signal {
 	}
 
 	// Sort by timetamp in order to look for large time gaps between
-	// location components. Sorting also by name allows us to look
-	// for duplicates of any signal.
+	// location components. Sorting also by name allows us to quickly
+	// look for duplicates.
 	slices.SortFunc(s.Signals, func(a, b vss.Signal) int {
 		return cmp.Or(a.Timestamp.Compare(b.Timestamp), cmp.Compare(a.Name, b.Name))
 	})
