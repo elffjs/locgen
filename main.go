@@ -42,6 +42,8 @@ type Store struct {
 
 var zeroTime time.Time
 
+// IndexRef is an index into a signals array. If no index has been
+// explicitly set then Filled will return false.
 type IndexRef struct {
 	filled bool
 	index  int

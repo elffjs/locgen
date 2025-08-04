@@ -148,3 +148,23 @@ func TestDropOriginCoordinates(t *testing.T) {
 
 	assert.ElementsMatch(t, expected, actual)
 }
+
+func TestSignalsAtExact500msBoundary(t *testing.T) {
+	firstTs := time.Date(2025, time.April, 19, 9, 0, 0, 0, time.UTC)
+	signals := []vss.Signal{
+		{TokenID: 3, Timestamp: firstTs, Name: fieldLatitude, ValueNumber: 40.0},
+		{TokenID: 3, Timestamp: firstTs.Add(500 * time.Millisecond), Name: fieldLongitude, ValueNumber: -74.0},
+	}
+
+	store := New(signals)
+	actual := store.ProcessAll()
+
+	// At exactly 500ms, they should still be grouped together
+	expected := []vss.Signal{
+		{TokenID: 3, Timestamp: firstTs, Name: fieldLatitude, ValueNumber: 40.0},
+		{TokenID: 3, Timestamp: firstTs.Add(500 * time.Millisecond), Name: fieldLongitude, ValueNumber: -74.0},
+		{TokenID: 3, Timestamp: firstTs, Name: fieldLocation, ValueLocation: vss.Location{Latitude: 40.0, Longitude: -74.0}},
+	}
+
+	assert.ElementsMatch(t, expected, actual)
+}
