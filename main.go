@@ -151,12 +151,9 @@ func (s *Store) Process(i int) {
 	if cell != nil {
 		if cell.Filled() {
 			// We got another value for this signal too quickly.
-			s.DropValue(i)
-		} else {
-			// We could attempt to Flush if all three signals happen
-			// to be active, but that would be more code, s we don't.
-			cell.Set(i)
+			s.TryFlush()
 		}
+		cell.Set(i)
 		s.EnsureTimestamp(sig.Timestamp)
 	}
 }
