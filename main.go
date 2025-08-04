@@ -136,7 +136,7 @@ func (s *Store) TryFlush() {
 	s.InFlightTimestamp = zeroTime
 }
 
-func (s *Store) HasAnyActive() bool {
+func (s *Store) HasPendingLocationData() bool {
 	return !s.InFlightTimestamp.IsZero()
 }
 
@@ -159,6 +159,10 @@ func (s *Store) IsDuplicate(i int) bool {
 	return sig.Timestamp.Equal(prevSig.Timestamp) && sig.Name == prevSig.Name
 }
 
+func (s *Store) ShouldFlushLocation(t time.Time) bool {
+	return s.HasPendingLocationData() && t.After(s.InFlightTimestamp.Add(maxLocationTimestampGap))
+}
+
 func (s *Store) Process(i int) {
 	sig := &s.Signals[i]
 
@@ -169,7 +173,7 @@ func (s *Store) Process(i int) {
 		return
 	}
 
-	if s.HasAnyActive() && sig.Timestamp.After(s.InFlightTimestamp.Add(maxLocationTimestampGap)) {
+	if s.ShouldFlushLocation(sig.Timestamp) {
 		s.TryFlush()
 	}
 
