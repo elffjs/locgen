@@ -8,163 +8,141 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestAssembleWithSkew(t *testing.T) {
-	firstTs := time.Date(2025, time.April, 19, 9, 0, 0, 0, time.UTC)
-	signals := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLatitude, ValueNumber: 39.997257245426994},
-		{TokenID: 3, Timestamp: firstTs.Add(5 * time.Millisecond), Name: fieldLongitude, ValueNumber: -78.03109355400886},
-		{TokenID: 3, Timestamp: firstTs.Add(7 * time.Millisecond), Name: fieldHDOP, ValueNumber: 4.2},
+func TestEmptyInput(t *testing.T) {
+	input := []vss.Signal{}
+
+	actual, err := ProcessSignals(input)
+
+	assert.NoError(t, err)
+	assert.Empty(t, actual)
+}
+
+func TestNonLocationSignalUntouched(t *testing.T) {
+	now := time.Now()
+
+	input := []vss.Signal{
+		{TokenID: 3, Timestamp: now, Name: vss.FieldSpeed, ValueNumber: 55},
 	}
 
-	store := New(signals)
-	actual := store.ProcessAll()
+	expected := []vss.Signal{
+		{TokenID: 3, Timestamp: now, Name: vss.FieldSpeed, ValueNumber: 55},
+	}
+
+	actual, err := ProcessSignals(input)
+
+	assert.NoError(t, err)
+	assert.ElementsMatch(t, expected, actual)
+}
+
+func TestFutureSignalDropped(t *testing.T) {
+	now := time.Now()
+
+	input := []vss.Signal{
+		{TokenID: 3, Timestamp: now, Name: vss.FieldSpeed, ValueNumber: 20},
+		{TokenID: 3, Timestamp: now.Add(time.Hour), Name: vss.FieldSpeed, ValueNumber: 55},
+	}
 
 	expected := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLatitude, ValueNumber: 39.997257245426994},
-		{TokenID: 3, Timestamp: firstTs.Add(5 * time.Millisecond), Name: fieldLongitude, ValueNumber: -78.03109355400886},
-		{TokenID: 3, Timestamp: firstTs.Add(7 * time.Millisecond), Name: fieldHDOP, ValueNumber: 4.2},
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLocation, ValueLocation: vss.Location{Latitude: 39.997257245426994, Longitude: -78.03109355400886, HDOP: 4.2}},
+		{TokenID: 3, Timestamp: now, Name: vss.FieldSpeed, ValueNumber: 20},
+	}
+
+	actual, err := ProcessSignals(input)
+
+	if assert.Error(t, err) {
+		assert.ErrorContains(t, err, vss.FieldSpeed)
 	}
 
 	assert.ElementsMatch(t, expected, actual)
 }
 
-func TestWithMultipleLocations(t *testing.T) {
-	firstTs := time.Date(2025, time.April, 19, 9, 0, 0, 0, time.UTC)
-	signals := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLatitude, ValueNumber: 39.997257245426994},
-		{TokenID: 3, Timestamp: firstTs.Add(5 * time.Millisecond), Name: fieldLongitude, ValueNumber: -78.03109355400886},
-		{TokenID: 3, Timestamp: firstTs.Add(7 * time.Millisecond), Name: fieldHDOP, ValueNumber: 4.2},
-		{TokenID: 3, Timestamp: firstTs.Add(10 * time.Millisecond), Name: vss.FieldPowertrainTransmissionTravelledDistance, ValueNumber: 1002},
-		{TokenID: 3, Timestamp: firstTs.Add(2 * time.Second), Name: fieldLatitude, ValueNumber: 39.12488084657269},
-		{TokenID: 3, Timestamp: firstTs.Add(2*time.Second + 2*time.Millisecond), Name: fieldLongitude, ValueNumber: -80.9534567391833},
-		{TokenID: 3, Timestamp: firstTs.Add(2*time.Second + 2*time.Millisecond), Name: fieldHDOP, ValueNumber: 3.8},
-	}
+func TestDuplicateSignalDropped(t *testing.T) {
+	now := time.Now()
 
-	store := New(signals)
-	actual := store.ProcessAll()
+	input := []vss.Signal{
+		{TokenID: 3, Timestamp: now, Name: vss.FieldSpeed, ValueNumber: 20},
+		{TokenID: 3, Timestamp: now, Name: vss.FieldSpeed, ValueNumber: 20},
+	}
 
 	expected := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLatitude, ValueNumber: 39.997257245426994},
-		{TokenID: 3, Timestamp: firstTs.Add(5 * time.Millisecond), Name: fieldLongitude, ValueNumber: -78.03109355400886},
-		{TokenID: 3, Timestamp: firstTs.Add(7 * time.Millisecond), Name: fieldHDOP, ValueNumber: 4.2},
-		{TokenID: 3, Timestamp: firstTs.Add(2 * time.Second), Name: fieldLatitude, ValueNumber: 39.12488084657269},
-		{TokenID: 3, Timestamp: firstTs.Add(10 * time.Millisecond), Name: vss.FieldPowertrainTransmissionTravelledDistance, ValueNumber: 1002},
-		{TokenID: 3, Timestamp: firstTs.Add(2*time.Second + 2*time.Millisecond), Name: fieldLongitude, ValueNumber: -80.9534567391833},
-		{TokenID: 3, Timestamp: firstTs.Add(2*time.Second + 2*time.Millisecond), Name: fieldHDOP, ValueNumber: 3.8},
-
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLocation, ValueLocation: vss.Location{Latitude: 39.997257245426994, Longitude: -78.03109355400886, HDOP: 4.2}},
-		{TokenID: 3, Timestamp: firstTs.Add(2 * time.Second), Name: fieldLocation, ValueLocation: vss.Location{Latitude: 39.12488084657269, Longitude: -80.9534567391833, HDOP: 3.8}},
+		{TokenID: 3, Timestamp: now, Name: vss.FieldSpeed, ValueNumber: 20},
 	}
 
+	actual, err := ProcessSignals(input)
+
+	assert.NoError(t, err)
 	assert.ElementsMatch(t, expected, actual)
 }
 
-func TestDuplicateLocations(t *testing.T) {
-	firstTs := time.Date(2025, time.April, 19, 9, 0, 0, 0, time.UTC)
-	signals := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLatitude, ValueNumber: 39.997257245426994},
-		{TokenID: 3, Timestamp: firstTs.Add(5 * time.Millisecond), Name: fieldLongitude, ValueNumber: -78.03109355400886},
-		{TokenID: 3, Timestamp: firstTs.Add(6 * time.Millisecond), Name: fieldLatitude, ValueNumber: 39.997257245426994},
-		{TokenID: 3, Timestamp: firstTs.Add(7 * time.Millisecond), Name: fieldHDOP, ValueNumber: 4.2},
-		{TokenID: 3, Timestamp: firstTs.Add(9 * time.Millisecond), Name: fieldLongitude, ValueNumber: -80.9534567391833},
-		{TokenID: 3, Timestamp: firstTs.Add(10 * time.Millisecond), Name: vss.FieldPowertrainTransmissionTravelledDistance, ValueNumber: 1002},
-		{TokenID: 3, Timestamp: firstTs.Add(2 * time.Second), Name: fieldLatitude, ValueNumber: 39.12488084657269},
-		{TokenID: 3, Timestamp: firstTs.Add(2*time.Second + 2*time.Millisecond), Name: fieldLongitude, ValueNumber: -80.9534567391833},
-		{TokenID: 3, Timestamp: firstTs.Add(2*time.Second + 2*time.Millisecond), Name: fieldHDOP, ValueNumber: 3.8},
+func TestCreateLocationSignal(t *testing.T) {
+	now := time.Now()
+
+	input := []vss.Signal{
+		{TokenID: 3, Timestamp: now, Name: vss.FieldCurrentLocationLatitude, ValueNumber: 42.33432565967395},
+		{TokenID: 3, Timestamp: now, Name: vss.FieldCurrentLocationLongitude, ValueNumber: -83.06028627110183},
 	}
 
-	store := New(signals)
-	actual := store.ProcessAll()
+	actual, err := ProcessSignals(input)
 
-	expected := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLatitude, ValueNumber: 39.997257245426994},
-		{TokenID: 3, Timestamp: firstTs.Add(5 * time.Millisecond), Name: fieldLongitude, ValueNumber: -78.03109355400886},
-		{TokenID: 3, Timestamp: firstTs.Add(6 * time.Millisecond), Name: fieldLatitude, ValueNumber: 39.997257245426994},
-		{TokenID: 3, Timestamp: firstTs.Add(7 * time.Millisecond), Name: fieldHDOP, ValueNumber: 4.2},
-		{TokenID: 3, Timestamp: firstTs.Add(9 * time.Millisecond), Name: fieldLongitude, ValueNumber: -80.9534567391833},
-		{TokenID: 3, Timestamp: firstTs.Add(10 * time.Millisecond), Name: vss.FieldPowertrainTransmissionTravelledDistance, ValueNumber: 1002},
-		{TokenID: 3, Timestamp: firstTs.Add(2 * time.Second), Name: fieldLatitude, ValueNumber: 39.12488084657269},
-		{TokenID: 3, Timestamp: firstTs.Add(2*time.Second + 2*time.Millisecond), Name: fieldLongitude, ValueNumber: -80.9534567391833},
-		{TokenID: 3, Timestamp: firstTs.Add(2*time.Second + 2*time.Millisecond), Name: fieldHDOP, ValueNumber: 3.8},
+	expected := append(input, vss.Signal{TokenID: 3, Timestamp: now, Name: "currentLocationCoordinates", ValueLocation: vss.Location{Latitude: 42.33432565967395, Longitude: -83.06028627110183}})
 
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLocation, ValueLocation: vss.Location{Latitude: 39.997257245426994, Longitude: -78.03109355400886}},
-		{TokenID: 3, Timestamp: firstTs.Add(6 * time.Millisecond), Name: fieldLocation, ValueLocation: vss.Location{Latitude: 39.997257245426994, Longitude: -80.9534567391833, HDOP: 4.2}},
-		{TokenID: 3, Timestamp: firstTs.Add(2 * time.Second), Name: fieldLocation, ValueLocation: vss.Location{Latitude: 39.12488084657269, Longitude: -80.9534567391833, HDOP: 3.8}},
-	}
-
+	assert.NoError(t, err)
 	assert.ElementsMatch(t, expected, actual)
 }
 
-func TestDropExactDuplicates(t *testing.T) {
-	firstTs := time.Date(2025, time.April, 19, 9, 0, 0, 0, time.UTC)
-	signals := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs, Name: vss.FieldPowertrainTransmissionTravelledDistance, ValueNumber: 1001},
-		{TokenID: 3, Timestamp: firstTs, Name: vss.FieldPowertrainTransmissionTravelledDistance, ValueNumber: 1002},
-		{TokenID: 3, Timestamp: firstTs, Name: vss.FieldPowertrainTransmissionTravelledDistance, ValueNumber: 1003},
+func TestCreateLocationSignalOtherOrder(t *testing.T) {
+	now := time.Now()
+
+	input := []vss.Signal{
+		{TokenID: 3, Timestamp: now, Name: vss.FieldCurrentLocationLongitude, ValueNumber: -83.06028627110183},
+		{TokenID: 3, Timestamp: now, Name: vss.FieldCurrentLocationLatitude, ValueNumber: 42.33432565967395},
 	}
 
-	store := New(signals)
-	actual := store.ProcessAll()
+	actual, err := ProcessSignals(input)
 
-	expected := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs, Name: vss.FieldPowertrainTransmissionTravelledDistance, ValueNumber: 1001},
-	}
+	expected := append(input, vss.Signal{TokenID: 3, Timestamp: now, Name: "currentLocationCoordinates", ValueLocation: vss.Location{Latitude: 42.33432565967395, Longitude: -83.06028627110183}})
 
+	assert.NoError(t, err)
 	assert.ElementsMatch(t, expected, actual)
 }
 
-func TestDropUnpairedCoordinates(t *testing.T) {
-	firstTs := time.Date(2025, time.April, 19, 9, 0, 0, 0, time.UTC)
-	signals := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLongitude, ValueNumber: 39.997257245426992},
-		{TokenID: 3, Timestamp: firstTs.Add(2 * time.Second), Name: fieldLatitude, ValueNumber: -78.03109355400886},
-		{TokenID: 3, Timestamp: firstTs.Add(2*time.Second + 6*time.Millisecond), Name: fieldLongitude, ValueNumber: 39.997257245426994},
+func TestCreateLocationSignalMultiple(t *testing.T) {
+	now := time.Now()
+
+	input := []vss.Signal{
+		{TokenID: 3, Timestamp: now, Name: vss.FieldCurrentLocationLatitude, ValueNumber: 42.33432565967395},
+		{TokenID: 3, Timestamp: now, Name: vss.FieldCurrentLocationLongitude, ValueNumber: -83.06028627110183},
+		{TokenID: 3, Timestamp: now.Add(time.Minute), Name: vss.FieldCurrentLocationLongitude, ValueNumber: -83.07573579459459},
+		{TokenID: 3, Timestamp: now.Add(time.Minute), Name: vss.FieldCurrentLocationLatitude, ValueNumber: 42.335848403478145},
 	}
 
-	store := New(signals)
-	actual := store.ProcessAll()
+	actual, err := ProcessSignals(input)
 
-	expected := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs.Add(2 * time.Second), Name: fieldLatitude, ValueNumber: -78.03109355400886},
-		{TokenID: 3, Timestamp: firstTs.Add(2*time.Second + 6*time.Millisecond), Name: fieldLongitude, ValueNumber: 39.997257245426994},
-		{TokenID: 3, Timestamp: firstTs.Add(2 * time.Second), Name: fieldLocation, ValueLocation: vss.Location{Latitude: -78.03109355400886, Longitude: 39.997257245426994}},
-	}
+	expected := append(input,
+		vss.Signal{TokenID: 3, Timestamp: now, Name: "currentLocationCoordinates", ValueLocation: vss.Location{Latitude: 42.33432565967395, Longitude: -83.06028627110183}},
+		vss.Signal{TokenID: 3, Timestamp: now.Add(time.Minute), Name: "currentLocationCoordinates", ValueLocation: vss.Location{Latitude: 42.335848403478145, Longitude: -83.07573579459459}},
+	)
 
+	assert.NoError(t, err)
 	assert.ElementsMatch(t, expected, actual)
 }
 
-func TestDropOriginCoordinates(t *testing.T) {
-	firstTs := time.Date(2025, time.April, 19, 9, 0, 0, 0, time.UTC)
-	signals := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLongitude, ValueNumber: 0},
-		{TokenID: 3, Timestamp: firstTs.Add(2 * time.Second), Name: fieldLatitude, ValueNumber: 0},
+func TestDropAfterLargeTimeGap(t *testing.T) {
+	now := time.Now()
+
+	input := []vss.Signal{
+		{TokenID: 3, Timestamp: now, Name: vss.FieldCurrentLocationLatitude, ValueNumber: 42.33432565967395},
+		{TokenID: 3, Timestamp: now.Add(time.Minute), Name: vss.FieldCurrentLocationLongitude, ValueNumber: -83.07573579459459},
+		{TokenID: 3, Timestamp: now.Add(time.Minute + time.Millisecond), Name: vss.FieldCurrentLocationLatitude, ValueNumber: 42.33432565967395},
 	}
 
-	store := New(signals)
-	actual := store.ProcessAll()
-
-	expected := []vss.Signal{}
-
-	assert.ElementsMatch(t, expected, actual)
-}
-
-func TestSignalsAtExact500msBoundary(t *testing.T) {
-	firstTs := time.Date(2025, time.April, 19, 9, 0, 0, 0, time.UTC)
-	signals := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLatitude, ValueNumber: 40.0},
-		{TokenID: 3, Timestamp: firstTs.Add(500 * time.Millisecond), Name: fieldLongitude, ValueNumber: -74.0},
-	}
-
-	store := New(signals)
-	actual := store.ProcessAll()
-
-	// At exactly 500ms, they should still be grouped together
 	expected := []vss.Signal{
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLatitude, ValueNumber: 40.0},
-		{TokenID: 3, Timestamp: firstTs.Add(500 * time.Millisecond), Name: fieldLongitude, ValueNumber: -74.0},
-		{TokenID: 3, Timestamp: firstTs, Name: fieldLocation, ValueLocation: vss.Location{Latitude: 40.0, Longitude: -74.0}},
+		{TokenID: 3, Timestamp: now.Add(time.Minute), Name: vss.FieldCurrentLocationLongitude, ValueNumber: -83.07573579459459},
+		{TokenID: 3, Timestamp: now.Add(time.Minute + time.Millisecond), Name: vss.FieldCurrentLocationLatitude, ValueNumber: 42.33432565967395},
+		{TokenID: 3, Timestamp: now.Add(time.Minute), Name: fieldCoordinates, ValueLocation: vss.Location{Latitude: 42.33432565967395, Longitude: -83.07573579459459}},
 	}
 
+	actual, err := ProcessSignals(input)
+
+	assert.Error(t, err)
 	assert.ElementsMatch(t, expected, actual)
 }
