@@ -2,244 +2,189 @@ package main
 
 import (
 	"cmp"
+	"errors"
+	"fmt"
 	"slices"
 	"time"
 
 	"github.com/DIMO-Network/model-garage/pkg/vss"
 )
 
-const (
-	// maxLocationTimestampGap is the maximum size of the time gap
-	// between location signals (latitude, longitude, HDOP) such that
-	// we still consider the signals to be related.
-	maxLocationTimestampGap = 500 * time.Millisecond
+const fieldCoordinates = "currentLocationCoordinates" // TODO(elffjs): Move this to the vss package.
 
-	fieldLatitude  = vss.FieldCurrentLocationLatitude
-	fieldLongitude = vss.FieldCurrentLocationLongitude
-	fieldHDOP      = vss.FieldDIMOAftermarketHDOP
-
-	fieldLocation = "currentLocation" // TODO(elffjs): Move this to the vss package.
+var (
+	futureAllowance    = 5 * time.Minute
+	allowedLocationGap = 500 * time.Millisecond
 )
 
-type Store struct {
-	Signals        []vss.Signal
-	AddedSignals   []vss.Signal
-	TemplateSignal *vss.Signal
-	ActiveLat      IndexRef
-	ActiveLon      IndexRef
-	ActiveHDOP     IndexRef
-	// SignalsToDelete flags each index in the original Signals array
-	// as being marked for deletion or not.
-	//
-	// Previously, we've used a magic string in the Name fields of
-	// signals for this purpose. This worked but may cause problems
-	// when there is more than one duplicate of a signal.
-	SignalsToDelete []bool
-	// InFlightTimestamp is the earliest timestamp among the latitude,
-	// longitude, and HDOP; if, indeed, any are populated.
-	InFlightTimestamp time.Time
+func fmtTime(t time.Time) string {
+	return t.Format(time.RFC3339)
 }
 
 var zeroTime time.Time
 
-// IndexRef is an index into a signals array. If no index has been
-// explicitly set then Filled will return false.
-type IndexRef struct {
-	filled bool
-	index  int
-}
-
-func (r *IndexRef) Filled() bool {
-	return r.filled
-}
-
-// Get returns the index stored for this cell, if any. If the cell is
-// empty then the sentinel value -1 is returned.
-func (r *IndexRef) Get() int {
-	if r.filled {
-		return r.index
+// ProcessSignals transforms a slice of input signals in ways that
+// simplify downstream processing. Currently this means:
+//
+//   - If there are multiple exact copies of a given signal, then
+//     remove all but one.
+//   - Remove location values with latitude and longitude both equal
+//     to zero.
+//   - Roughly, for each triple of the input signals named
+//     currentLocationLatitude, currentLocationLongitude, and
+//     dimoAftermarketHDOP with sufficiently
+//     close timestamps, we will also emit a location-values signal
+//     named currentLocationCoordinates which combines all three.
+//   - Remove unpaired latitudes and longitudes.
+//   - Remove values that are far into the future.
+//   - Remove coordinates at the origin (0, 0).
+//
+// The returned slice of signals is always meaningful, even if an error
+// is also returned.
+//
+// Note that this function does reorder the input slice.
+func ProcessSignals(signals []vss.Signal) ([]vss.Signal, error) {
+	if len(signals) == 0 {
+		return signals, nil
 	}
-	return -1
-}
 
-func (r *IndexRef) Set(index int) {
-	r.filled = true
-	r.index = index
-}
+	// Used to populate the payload-wide stuff, like token id or
+	// CloudEvent id, in newly created rows. We assume that these do
+	// not change within a single payload.
+	template := signals[0]
 
-func (r *IndexRef) Clear() {
-	r.filled = false
-}
-
-func (s *Store) GetValue(c IndexRef) float64 {
-	return s.Signals[c.Get()].ValueNumber
-}
-
-func (s *Store) DropValue(signalIndex int) {
-	if signalIndex != -1 {
-		s.SignalsToDelete[signalIndex] = true
-	}
-}
-
-func (s *Store) DropLatLon() {
-	s.DropValue(s.ActiveLat.Get())
-	s.DropValue(s.ActiveLon.Get())
-}
-
-// TryFlush attempts to create a new location row with any active
-// signals. If this is not possible then any active signals will be
-// marked for deletion.
-func (s *Store) TryFlush() {
 	var (
-		flushable bool
-		loc       vss.Location
+		errs    error
+		drop    = make([]bool, len(signals))
+		created []vss.Signal
+
+		// The
+		lastLat, lastLon = -1, -1
+		lastHDOP         = -1
+		lastTime         time.Time
 	)
 
-	if s.ActiveLat.Filled() && s.ActiveLon.Filled() {
-		lat := s.GetValue(s.ActiveLat)
-		lon := s.GetValue(s.ActiveLon)
-
-		if lat == 0 && lon == 0 {
-			// Sometimes we do get (0, 0). These we just ignore; they
-			// are probably error values.
-			s.DropLatLon()
-		} else {
-			flushable = true
-			loc.Latitude = lat
-			loc.Longitude = lon
+	lastReference := func(signalName string) *int {
+		switch signalName {
+		case vss.FieldCurrentLocationLatitude:
+			return &lastLat
+		case vss.FieldCurrentLocationLongitude:
+			return &lastLon
+		case vss.FieldDIMOAftermarketHDOP:
+			return &lastHDOP
+		default:
+			return nil
 		}
-	} else {
-		// If we have either of these, they are unpaired.
-		s.DropLatLon()
 	}
 
-	if s.ActiveHDOP.Filled() {
-		flushable = true
-		loc.HDOP = s.GetValue(s.ActiveHDOP)
-	}
+	tryCreateLocationSignal := func() {
+		var (
+			loc    vss.Location
+			create bool
+		)
 
-	if flushable {
-		s.AddedSignals = append(s.AddedSignals,
-			vss.Signal{
-				TokenID:       s.TemplateSignal.TokenID,
-				Timestamp:     s.InFlightTimestamp,
-				Name:          fieldLocation,
+		if lastLat != -1 && lastLon != -1 {
+			lat, lon := signals[lastLat].ValueNumber, signals[lastLon].ValueNumber
+			if lat == 0 && lon == 0 {
+				drop[lastLat], drop[lastLon] = true, true
+				errs = errors.Join(errs, fmt.Errorf("latitude and longitude at origin at time %s", fmtTime(lastTime)))
+			} else {
+				loc.Latitude, loc.Longitude = lat, lon
+				create = true
+			}
+		} else if lastLat != -1 {
+			drop[lastLat] = true
+			errs = errors.Join(errs, fmt.Errorf("unpaired latitude at time %s", fmtTime(lastTime)))
+		} else if lastLon != -1 {
+			drop[lastLon] = true
+			errs = errors.Join(errs, fmt.Errorf("unpaired longitude at time %s", fmtTime(lastTime)))
+		}
+
+		if lastHDOP != -1 {
+			loc.HDOP = signals[lastHDOP].ValueNumber
+			create = true
+		}
+
+		if create {
+			created = append(created, vss.Signal{
+				TokenID:       template.TokenID,
+				Timestamp:     lastTime,
+				Name:          fieldCoordinates,
 				ValueLocation: loc,
-				Source:        s.TemplateSignal.Source,
-				Producer:      s.TemplateSignal.Producer,
-				CloudEventID:  s.TemplateSignal.CloudEventID,
+				Source:        template.Source,
+				Producer:      template.Producer,
+				CloudEventID:  template.CloudEventID,
 			})
-	}
-
-	// Reset everything.
-	s.ActiveLat.Clear()
-	s.ActiveLon.Clear()
-	s.ActiveHDOP.Clear()
-	s.InFlightTimestamp = zeroTime
-}
-
-func (s *Store) HasPendingLocationData() bool {
-	return !s.InFlightTimestamp.IsZero()
-}
-
-// EnsureTimestamp sets the timestamp for the vss.Location currently
-// being built, if this timestamp has not already been set.
-func (s *Store) EnsureTimestamp(t time.Time) {
-	if s.InFlightTimestamp.IsZero() {
-		s.InFlightTimestamp = t
-	}
-}
-
-func (s *Store) IsDuplicate(i int) bool {
-	// We only compare with preceding rows, so at index 0 there's
-	// nothing to do.
-	if i == 0 {
-		return false
-	}
-
-	prevSig, sig := s.Signals[i-1], s.Signals[i]
-
-	return sig.Timestamp.Equal(prevSig.Timestamp) && sig.Name == prevSig.Name
-}
-
-func (s *Store) ShouldFlushLocation(t time.Time) bool {
-	return s.HasPendingLocationData() && t.After(s.InFlightTimestamp.Add(maxLocationTimestampGap))
-}
-
-func (s *Store) Process(i int) {
-	sig := &s.Signals[i]
-
-	// Remove exact duplicates, from the perspective of the dimo.signal
-	// table index.
-	if s.IsDuplicate(i) {
-		s.DropValue(i)
-		return
-	}
-
-	if s.ShouldFlushLocation(sig.Timestamp) {
-		s.TryFlush()
-	}
-
-	cell := s.GetActiveIndex(sig.Name)
-	if cell != nil {
-		if cell.Filled() {
-			// We got another value for this signal too quickly.
-			s.TryFlush()
 		}
-		cell.Set(i)
-		s.EnsureTimestamp(sig.Timestamp)
-	}
-}
 
-func (s *Store) GetActiveIndex(signalName string) *IndexRef {
-	switch signalName {
-	case fieldLatitude:
-		return &s.ActiveLat
-	case fieldLongitude:
-		return &s.ActiveLon
-	case fieldHDOP:
-		return &s.ActiveHDOP
-	default:
-		return nil
-	}
-}
-
-func (s *Store) ProcessAll() []vss.Signal {
-	if len(s.Signals) == 0 {
-		return s.Signals
+		lastLat, lastLon = -1, -1
+		lastHDOP = -1
+		lastTime = zeroTime
 	}
 
-	// Sort by timetamp in order to look for large time gaps between
-	// location components. Sorting also by name allows us to quickly
-	// look for duplicates.
-	slices.SortFunc(s.Signals, func(a, b vss.Signal) int {
+	// Sorting this way makes it easier to handle time gaps, and to
+	// remove duplicates.
+	slices.SortFunc(signals, func(a, b vss.Signal) int {
 		return cmp.Or(a.Timestamp.Compare(b.Timestamp), cmp.Compare(a.Name, b.Name))
 	})
 
-	s.TemplateSignal = &s.Signals[0]
-	s.SignalsToDelete = make([]bool, len(s.Signals))
+	now := time.Now()
 
-	for i := range s.Signals {
-		s.Process(i)
-	}
+	for i, sig := range signals {
+		if !lastTime.IsZero() && sig.Timestamp.Sub(lastTime) >= allowedLocationGap {
+			tryCreateLocationSignal()
+		}
 
-	// See if we can make something out of the last signal.
-	s.TryFlush()
+		// If this triggers then it will continue to trigger for the
+		// rest of the loop, because we started out sorting by
+		// timestamp.
+		if sig.Timestamp.After(now.Add(futureAllowance)) {
+			errs = errors.Join(errs, fmt.Errorf("signal %s has future timestamp %s", sig.Name, fmtTime(sig.Timestamp)))
+			drop[i] = true
+			continue
+		}
 
-	var out []vss.Signal
-	for i := range s.Signals {
-		if !s.SignalsToDelete[i] {
-			out = append(out, s.Signals[i])
+		// Check for exact duplicates. These will be next to each other
+		// after the sort.
+		if i > 0 {
+			lastSig := signals[i-1]
+			if sig.Name == lastSig.Name && sig.Timestamp.Equal(lastSig.Timestamp) {
+				// Historically, we have not emitted errors for this.
+				drop[i] = true
+				continue
+			}
+		}
+
+		lastRef := lastReference(sig.Name)
+		if lastRef == nil {
+			// Not a location signal.
+			continue
+		}
+
+		// We got the same signal again. Try to create before starting
+		// a new location.
+		if *lastRef != -1 {
+			tryCreateLocationSignal()
+		}
+
+		*lastRef = i
+		if lastTime.IsZero() {
+			lastTime = sig.Timestamp
 		}
 	}
 
-	out = append(out, s.AddedSignals...)
+	// One last attempt, in case we're in the process of constructing
+	// a location.
+	tryCreateLocationSignal()
 
-	return out
-}
-
-func New(signals []vss.Signal) *Store {
-	return &Store{
-		Signals: signals,
+	var out []vss.Signal
+	for i, sig := range signals {
+		if !drop[i] {
+			out = append(out, sig)
+		}
 	}
+
+	out = append(out, created...)
+
+	return out, errs
 }
