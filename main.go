@@ -23,8 +23,8 @@ func fmtTime(t time.Time) string {
 
 var zeroTime time.Time
 
-// ProcessSignals transforms the input signals in ways that simplify
-// downstream processing. Currently this means:
+// ProcessSignals transforms a slice of input signals in ways that
+// simplify downstream processing. Currently this means:
 //
 //   - If there are multiple exact copies of a given signal, then
 //     remove all but one.
@@ -37,17 +37,20 @@ var zeroTime time.Time
 //     named currentLocationCoordinates which combines all three.
 //   - Remove unpaired latitudes and longitudes.
 //   - Remove values that are far into the future.
-//   - Remove (0, 0) coordinates.
+//   - Remove coordinates at the origin (0, 0).
 //
 // The returned slice of signals is always meaningful, even if an error
 // is also returned.
+//
+// Note that this function does reorder the input slice.
 func ProcessSignals(signals []vss.Signal) ([]vss.Signal, error) {
 	if len(signals) == 0 {
 		return signals, nil
 	}
 
-	// Used to populate the payload-wide stuff, like CloudEvent id, in
-	// newly created rows.
+	// Used to populate the payload-wide stuff, like token id or
+	// CloudEvent id, in newly created rows. We assume that these do
+	// not change within a single payload.
 	template := signals[0]
 
 	var (
@@ -55,8 +58,10 @@ func ProcessSignals(signals []vss.Signal) ([]vss.Signal, error) {
 		drop    = make([]bool, len(signals))
 		created []vss.Signal
 
-		lastLat, lastLon, lastHDOP int = -1, -1, -1
-		lastTime                   time.Time
+		// The
+		lastLat, lastLon = -1, -1
+		lastHDOP         = -1
+		lastTime         time.Time
 	)
 
 	lastReference := func(signalName string) *int {
@@ -81,12 +86,10 @@ func ProcessSignals(signals []vss.Signal) ([]vss.Signal, error) {
 		if lastLat != -1 && lastLon != -1 {
 			lat, lon := signals[lastLat].ValueNumber, signals[lastLon].ValueNumber
 			if lat == 0 && lon == 0 {
-				drop[lastLat] = true
-				drop[lastLon] = true
+				drop[lastLat], drop[lastLon] = true, true
 				errs = errors.Join(errs, fmt.Errorf("latitude and longitude at origin at time %s", fmtTime(lastTime)))
 			} else {
-				loc.Latitude = lat
-				loc.Longitude = lon
+				loc.Latitude, loc.Longitude = lat, lon
 				create = true
 			}
 		} else if lastLat != -1 {
@@ -114,10 +117,13 @@ func ProcessSignals(signals []vss.Signal) ([]vss.Signal, error) {
 			})
 		}
 
-		lastLat, lastLon, lastHDOP = -1, -1, -1
+		lastLat, lastLon = -1, -1
+		lastHDOP = -1
 		lastTime = zeroTime
 	}
 
+	// Sorting this way makes it easier to handle time gaps, and to
+	// remove duplicates.
 	slices.SortFunc(signals, func(a, b vss.Signal) int {
 		return cmp.Or(a.Timestamp.Compare(b.Timestamp), cmp.Compare(a.Name, b.Name))
 	})
@@ -139,7 +145,7 @@ func ProcessSignals(signals []vss.Signal) ([]vss.Signal, error) {
 		}
 
 		// Check for exact duplicates. These will be next to each other
-		// after the above sort.
+		// after the sort.
 		if i > 0 {
 			lastSig := signals[i-1]
 			if sig.Name == lastSig.Name && sig.Timestamp.Equal(lastSig.Timestamp) {
