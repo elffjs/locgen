@@ -12,9 +12,9 @@ import (
 
 const fieldCoordinates = "currentLocationCoordinates" // TODO(elffjs): Move this to the vss package.
 
-var (
-	futureAllowance    = 5 * time.Minute
+const (
 	allowedLocationGap = 500 * time.Millisecond
+	dropSignalName     = "__drop"
 )
 
 func fmtTime(t time.Time) string {
@@ -53,50 +53,35 @@ func ProcessSignals(signals []vss.Signal) ([]vss.Signal, error) {
 	// not change within a single payload.
 	template := signals[0]
 
-	var (
-		errs    error
-		drop    = make([]bool, len(signals))
-		created []vss.Signal
-
-		// The
-		lastLat, lastLon = -1, -1
-		lastHDOP         = -1
-		lastTime         time.Time
-	)
-
-	lastReference := func(signalName string) *int {
-		switch signalName {
-		case vss.FieldCurrentLocationLatitude:
-			return &lastLat
-		case vss.FieldCurrentLocationLongitude:
-			return &lastLon
-		case vss.FieldDIMOAftermarketHDOP:
-			return &lastHDOP
-		default:
-			return nil
-		}
-	}
+	var errs error
+	var created []vss.Signal
+	var lastTime time.Time
+	lastLat := -1
+	lastLon := -1
+	lastHDOP := -1
 
 	tryCreateLocationSignal := func() {
-		var (
-			loc    vss.Location
-			create bool
-		)
+		var loc vss.Location
+		var create bool
 
 		if lastLat != -1 && lastLon != -1 {
-			lat, lon := signals[lastLat].ValueNumber, signals[lastLon].ValueNumber
+			lat := signals[lastLat].ValueNumber
+			lon := signals[lastLon].ValueNumber
+
 			if lat == 0 && lon == 0 {
-				drop[lastLat], drop[lastLon] = true, true
+				signals[lastLat].Name = dropSignalName
+				signals[lastLon].Name = dropSignalName
 				errs = errors.Join(errs, fmt.Errorf("latitude and longitude at origin at time %s", fmtTime(lastTime)))
 			} else {
-				loc.Latitude, loc.Longitude = lat, lon
+				loc.Latitude = lat
+				loc.Longitude = lon
 				create = true
 			}
 		} else if lastLat != -1 {
-			drop[lastLat] = true
+			signals[lastLat].Name = dropSignalName
 			errs = errors.Join(errs, fmt.Errorf("unpaired latitude at time %s", fmtTime(lastTime)))
 		} else if lastLon != -1 {
-			drop[lastLon] = true
+			signals[lastLon].Name = dropSignalName
 			errs = errors.Join(errs, fmt.Errorf("unpaired longitude at time %s", fmtTime(lastTime)))
 		}
 
@@ -117,57 +102,47 @@ func ProcessSignals(signals []vss.Signal) ([]vss.Signal, error) {
 			})
 		}
 
-		lastLat, lastLon = -1, -1
+		lastLat = -1
+		lastLon = -1
 		lastHDOP = -1
 		lastTime = zeroTime
 	}
 
-	// Sorting this way makes it easier to handle time gaps, and to
-	// remove duplicates.
+	// Sorting this way makes it easier to handle time gaps. Sorting
+	// thereafter by name is not strictly necessary.
 	slices.SortFunc(signals, func(a, b vss.Signal) int {
 		return cmp.Or(a.Timestamp.Compare(b.Timestamp), cmp.Compare(a.Name, b.Name))
 	})
-
-	now := time.Now()
 
 	for i, sig := range signals {
 		if !lastTime.IsZero() && sig.Timestamp.Sub(lastTime) >= allowedLocationGap {
 			tryCreateLocationSignal()
 		}
 
-		// If this triggers then it will continue to trigger for the
-		// rest of the loop, because we started out sorting by
-		// timestamp.
-		if sig.Timestamp.After(now.Add(futureAllowance)) {
-			errs = errors.Join(errs, fmt.Errorf("signal %s has future timestamp %s", sig.Name, fmtTime(sig.Timestamp)))
-			drop[i] = true
-			continue
-		}
-
-		// Check for exact duplicates. These will be next to each other
-		// after the sort.
-		if i > 0 {
-			lastSig := signals[i-1]
-			if sig.Name == lastSig.Name && sig.Timestamp.Equal(lastSig.Timestamp) {
-				// Historically, we have not emitted errors for this.
-				drop[i] = true
-				continue
+		// This logic could be made shorter and less repetitive by
+		// playing around with *int.
+		switch sig.Name {
+		case vss.FieldCurrentLocationLatitude:
+			if lastLat != -1 {
+				// Start a new triple, but see if what's already being
+				// tracked is enough to yield a row.
+				tryCreateLocationSignal()
 			}
-		}
-
-		lastRef := lastReference(sig.Name)
-		if lastRef == nil {
-			// Not a location signal.
+			lastLat = i
+		case vss.FieldCurrentLocationLongitude:
+			if lastLon != -1 {
+				tryCreateLocationSignal()
+			}
+			lastLon = i
+		case vss.FieldDIMOAftermarketHDOP:
+			if lastHDOP != -1 {
+				tryCreateLocationSignal()
+			}
+			lastHDOP = i
+		default:
 			continue
 		}
 
-		// We got the same signal again. Try to create before starting
-		// a new location.
-		if *lastRef != -1 {
-			tryCreateLocationSignal()
-		}
-
-		*lastRef = i
 		if lastTime.IsZero() {
 			lastTime = sig.Timestamp
 		}
@@ -178,8 +153,8 @@ func ProcessSignals(signals []vss.Signal) ([]vss.Signal, error) {
 	tryCreateLocationSignal()
 
 	var out []vss.Signal
-	for i, sig := range signals {
-		if !drop[i] {
+	for _, sig := range signals {
+		if sig.Name != dropSignalName {
 			out = append(out, sig)
 		}
 	}

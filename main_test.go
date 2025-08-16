@@ -34,45 +34,6 @@ func TestNonLocationSignalUntouched(t *testing.T) {
 	assert.ElementsMatch(t, expected, actual)
 }
 
-func TestFutureSignalDropped(t *testing.T) {
-	now := time.Now()
-
-	input := []vss.Signal{
-		{TokenID: 3, Timestamp: now, Name: vss.FieldSpeed, ValueNumber: 20},
-		{TokenID: 3, Timestamp: now.Add(time.Hour), Name: vss.FieldSpeed, ValueNumber: 55},
-	}
-
-	expected := []vss.Signal{
-		{TokenID: 3, Timestamp: now, Name: vss.FieldSpeed, ValueNumber: 20},
-	}
-
-	actual, err := ProcessSignals(input)
-
-	if assert.Error(t, err) {
-		assert.ErrorContains(t, err, vss.FieldSpeed)
-	}
-
-	assert.ElementsMatch(t, expected, actual)
-}
-
-func TestDuplicateSignalDropped(t *testing.T) {
-	now := time.Now()
-
-	input := []vss.Signal{
-		{TokenID: 3, Timestamp: now, Name: vss.FieldSpeed, ValueNumber: 20},
-		{TokenID: 3, Timestamp: now, Name: vss.FieldSpeed, ValueNumber: 20},
-	}
-
-	expected := []vss.Signal{
-		{TokenID: 3, Timestamp: now, Name: vss.FieldSpeed, ValueNumber: 20},
-	}
-
-	actual, err := ProcessSignals(input)
-
-	assert.NoError(t, err)
-	assert.ElementsMatch(t, expected, actual)
-}
-
 func TestCreateLocationSignal(t *testing.T) {
 	now := time.Now()
 
