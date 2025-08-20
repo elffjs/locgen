@@ -16,8 +16,8 @@ const fieldCoordinates = "currentLocationCoordinates" // TODO(elffjs): Move this
 var zeroTime time.Time
 
 const (
-	allowedLocationGap = 500 * time.Millisecond
-	dropSignalName     = "__drop"
+	maxLatLongDur   = 500 * time.Millisecond
+	pruneSignalName = "__drop"
 )
 
 // ProcessSignals transforms a slice of input signals in ways that
@@ -103,7 +103,7 @@ func (c *coordinateStore) processSignals() ([]vss.Signal, error) {
 
 	var out []vss.Signal
 	for _, sig := range c.signals {
-		if sig.Name != dropSignalName {
+		if sig.Name != pruneSignalName {
 			out = append(out, sig)
 		}
 	}
@@ -116,7 +116,7 @@ func (c *coordinateStore) processSignals() ([]vss.Signal, error) {
 func (c *coordinateStore) processSignal(index int) {
 	sig := c.signals[index]
 
-	if !c.lastTime.IsZero() && sig.Timestamp.Sub(c.lastTime) >= allowedLocationGap {
+	if !c.lastTime.IsZero() && sig.Timestamp.Sub(c.lastTime) >= maxLatLongDur {
 		c.tryCreateLocation()
 	}
 
@@ -167,8 +167,8 @@ func (c *coordinateStore) tryCreateLocation() {
 		lon := c.signals[c.lastLon].ValueNumber
 
 		if lat == 0 && lon == 0 {
-			c.signals[c.lastLat].Name = dropSignalName
-			c.signals[c.lastLon].Name = dropSignalName
+			c.signals[c.lastLat].Name = pruneSignalName
+			c.signals[c.lastLon].Name = pruneSignalName
 			c.errs = append(c.errs, fmt.Errorf("latitude and longitude at origin at time %s", fmtTime(c.lastTime)))
 		} else {
 			loc.Latitude = lat
@@ -176,10 +176,10 @@ func (c *coordinateStore) tryCreateLocation() {
 			create = true
 		}
 	} else if c.lastLat != -1 {
-		c.signals[c.lastLat].Name = dropSignalName
+		c.signals[c.lastLat].Name = pruneSignalName
 		c.errs = append(c.errs, fmt.Errorf("unpaired latitude at time %s", fmtTime(c.lastTime)))
 	} else if c.lastLon != -1 {
-		c.signals[c.lastLon].Name = dropSignalName
+		c.signals[c.lastLon].Name = pruneSignalName
 		c.errs = append(c.errs, fmt.Errorf("unpaired longitude at time %s", fmtTime(c.lastTime)))
 	}
 
